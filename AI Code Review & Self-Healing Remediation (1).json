@@ -1,0 +1,821 @@
+{
+  "name": "AI Code Review & Self-Healing Remediation",
+  "nodes": [
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "or",
+          "conditions": [
+            {
+              "id": "c-opened",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "opened",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c-sync",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "synchronize",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8fa991b8-233d-4205-b7be-efdbe0a5adf1",
+      "name": "Only Opened / Synchronize",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "pullRequest",
+        "operation": "getDiff",
+        "pullRequestNumber": "={{ $json.pull_request.number }}",
+        "owner": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $json.repository.owner.login }}"
+        },
+        "repository": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $json.repository.name }}"
+        }
+      },
+      "id": "7e36fe05-4b38-44b6-91b9-195ed295bfb8",
+      "name": "Get PR Diff",
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        464
+      ],
+      "webhookId": "63eacc37-73b5-438a-b7cb-24a5d6b1310c",
+      "credentials": {
+        "githubApi": {
+          "id": "u36h5ikctJ9avIJN",
+          "name": "GitHub account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const t = $('GitHub PR Trigger').item.json;\nconst raw = $json;\nconst diff = typeof raw === 'string' ? raw : (raw.data || raw.body || raw.diff || '');\nreturn { json: {\n  owner: t.repository.owner.login,\n  repo: t.repository.name,\n  pr_number: t.pull_request.number,\n  head_ref: t.pull_request.head.ref,\n  head_sha: t.pull_request.head.sha,\n  diff,\n} };"
+      },
+      "id": "e3a15f1b-dcec-41d6-a087-58f22a423fca",
+      "name": "Extract PR Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Review the following pull request diff and return structured findings.\n\nDIFF:\n{{ $json.diff }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a senior code reviewer. Evaluate the supplied PR diff for (1) syntax issues, (2) security vulnerabilities, and (3) logic bugs. Return a JSON object matching the required schema: a \"findings\" array (each with file, line, severity, category, message, suggestion) and a short \"summary\". Be precise and only report real issues. If no issues, return an empty findings array."
+        }
+      },
+      "id": "d1a8464a-e59c-4aba-833c-3cf06329772e",
+      "name": "Static Review",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        896,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5-mini",
+          "cachedResultName": "gpt-5-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "ec0307d3-c1d7-4cf5-bcf0-121bb7fad568",
+      "name": "Review Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        912,
+        688
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "ieEarJpKwi1gRL2u",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"findings\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"file\":{\"type\":\"string\"},\"line\":{\"type\":\"number\"},\"severity\":{\"type\":\"string\",\"enum\":[\"critical\",\"high\",\"medium\",\"low\",\"info\"]},\"category\":{\"type\":\"string\",\"enum\":[\"syntax\",\"security\",\"logic\",\"style\"]},\"message\":{\"type\":\"string\"},\"suggestion\":{\"type\":\"string\"}},\"required\":[\"file\",\"severity\",\"category\",\"message\"]}},\"summary\":{\"type\":\"string\"}},\"required\":[\"findings\",\"summary\"]}"
+      },
+      "id": "1d8da571-367f-4bbb-97c4-dc1d8a73c25c",
+      "name": "Review Findings Schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1040,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $('Extract PR Context').item.json;\nconst review = $json.output || { findings: [], summary: '' };\nreturn { json: {\n  owner: ctx.owner,\n  repo: ctx.repo,\n  pr_number: ctx.pr_number,\n  head_ref: ctx.head_ref,\n  head_sha: ctx.head_sha,\n  diff: ctx.diff,\n  review,\n  retry_count: 0,\n  patch: '',\n} };"
+      },
+      "id": "b8f852df-78b9-4048-b254-40d6508972a4",
+      "name": "Build State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $input.item.json;\nreturn { json: {\n  owner: j.owner,\n  repo: j.repo,\n  pr_number: j.pr_number,\n  head_ref: j.head_ref,\n  head_sha: j.head_sha,\n  diff: j.diff,\n  review: j.review,\n  retry_count: j.retry_count == null ? 0 : j.retry_count,\n  patch: j.patch == null ? '' : j.patch,\n} };"
+      },
+      "id": "37021d12-2303-4750-96ab-1f5a8b1c8d09",
+      "name": "Prepare Test Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "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",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpTemplatedCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"owner\": \"{{ $json.owner }}\",\n  \"repo\": \"{{ $json.repo }}\",\n  \"pr_number\": {{ $json.pr_number }},\n  \"branch\": \"{{ $json.head_ref }}\",\n  \"patch\": {{ JSON.stringify($json.patch) }}\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "f8568617-721e-4c98-a962-cd418dfc3403",
+      "name": "Run Tests (Remote Runner)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1696,
+        400
+      ],
+      "credentials": {
+        "httpTemplatedCustomAuth": {
+          "id": "LCXttt5IJld8C1T4",
+          "name": "Test Runner Auth (vikasn8n)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const s = $('Prepare Test Run').item.json;\nconst r = $json || {};\nconst exitCode = r.exit_code != null ? Number(r.exit_code) : (r.exitCode != null ? Number(r.exitCode) : 1);\nreturn { json: {\n  ...s,\n  exit_code: exitCode,\n  stdout: r.stdout || '',\n  stderr: r.stderr || (r.message || ''),\n} };"
+      },
+      "id": "2fa22e5b-eba8-4e2d-b452-b06f45f3a003",
+      "name": "Evaluate Tests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "exit-zero",
+              "leftValue": "={{ $json.exit_code }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b35b84c3-1a78-4b1a-81cc-e0bb2ea88c55",
+      "name": "Tests Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2144,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BRNFLFT1D",
+          "mode": "list",
+          "cachedResultName": "all-n8nworkspace"
+        },
+        "message": "=:white_check_mark: *Tests passed for PR #{{ $json.pr_number }} — {{ $json.owner }}/{{ $json.repo }}*\n\n*Review summary:* {{ $json.review.summary }}\n\n*Findings:* {{ $json.review.findings.length }}\n\n*Test output:*\n```{{ $json.stdout }}```\n\n*Applied patch (if any):*\n```{{ $json.patch }}```\n\nApprove to post review comments, and merge the PR.",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double",
+            "approveLabel": "Approve & Merge",
+            "disapproveLabel": "Reject"
+          }
+        },
+        "options": {
+          "limitWaitTime": {
+            "values": {
+              "resumeAmount": 24
+            }
+          }
+        }
+      },
+      "id": "5797d22c-7bde-47b6-83fb-2287ec912739",
+      "name": "Request Approval",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        2368,
+        96
+      ],
+      "webhookId": "fea8eec2-0abc-408b-b4a3-fc90253997bb",
+      "credentials": {
+        "slackApi": {
+          "id": "6QGiO5jUVmu3t1N1",
+          "name": "Slack account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "is-approved",
+              "leftValue": "={{ $json.data.approved }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b4657a31-df39-467c-b3cd-2e114947451e",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2656,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "review",
+        "owner": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Prepare Test Run').item.json.owner }}"
+        },
+        "repository": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Prepare Test Run').item.json.repo }}"
+        },
+        "pullRequestNumber": "={{ $('Prepare Test Run').item.json.pr_number }}",
+        "event": "comment",
+        "body": "=Automated AI review — {{ $('Prepare Test Run').item.json.review.summary }}\n\nTests passed. See details in the workflow run.",
+        "additionalFields": {}
+      },
+      "id": "6bebc980-b025-4d81-882c-3a2e7b30cadb",
+      "name": "Post Review Comments",
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        2944,
+        0
+      ],
+      "webhookId": "07887f6b-bc2c-4343-a62c-a2bce25a3e36",
+      "credentials": {
+        "githubApi": {
+          "id": "u36h5ikctJ9avIJN",
+          "name": "GitHub account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "pullRequest",
+        "operation": "merge",
+        "pullRequestNumber": "={{ $('Prepare Test Run').item.json.pr_number }}",
+        "owner": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Prepare Test Run').item.json.owner }}"
+        },
+        "repository": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $('Prepare Test Run').item.json.repo }}"
+        }
+      },
+      "id": "e12b0e31-0717-47c2-bce3-1db3bf03a290",
+      "name": "Merge PR",
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        3168,
+        0
+      ],
+      "webhookId": "17ff370e-66af-4cc4-b9cc-3a968b9f4962",
+      "credentials": {
+        "githubApi": {
+          "id": "u36h5ikctJ9avIJN",
+          "name": "GitHub account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BRNFLFT1D",
+          "mode": "list",
+          "cachedResultName": "all-n8nworkspace"
+        },
+        "text": "=:no_entry: *PR #{{ $('Prepare Test Run').item.json.pr_number }} in {{ $('Prepare Test Run').item.json.owner }}/{{ $('Prepare Test Run').item.json.repo }} was rejected by a reviewer.* No merge performed.",
+        "otherOptions": {}
+      },
+      "id": "9738508b-1a01-4970-a6bf-78ecf11a38ed",
+      "name": "Post Rejection Notice",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        2944,
+        192
+      ],
+      "webhookId": "b531525f-825e-4460-a4c5-22d38973bd56",
+      "credentials": {
+        "slackApi": {
+          "id": "6QGiO5jUVmu3t1N1",
+          "name": "Slack account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "retry-lt-3",
+              "leftValue": "={{ $json.retry_count }}",
+              "rightValue": 3,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1aa2263c-34a1-4eeb-8894-b03dd39b0b2e",
+      "name": "Retry Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2368,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=The test suite failed. Produce a corrected unified-diff patch that fixes the failure.\n\nORIGINAL DIFF:\n{{ $json.diff }}\n\nPREVIOUS PATCH (may be empty):\n{{ $json.patch }}\n\nTEST FAILURE (stderr):\n{{ $json.stderr }}\n\nTEST OUTPUT (stdout):\n{{ $json.stdout }}\n\nReturn ONLY a valid unified-diff patch, no prose.",
+        "options": {
+          "systemMessage": "You are a self-healing code remediation agent. Given the original diff and the test failure traceback, output a corrected unified-diff patch that makes the tests pass. Output only the patch text."
+        }
+      },
+      "id": "86e4e14a-cda0-4990-9e66-788b4be6c7de",
+      "name": "Remediation AI",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        2592,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5-mini",
+          "cachedResultName": "gpt-5-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "d58c4cc7-0fba-463e-b4af-88a535ea376f",
+      "name": "Remediation Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        2672,
+        560
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "ieEarJpKwi1gRL2u",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const s = $('Prepare Test Run').item.json;\nconst patch = $json.output || $json.text || '';\nreturn { json: {\n  ...s,\n  patch,\n  retry_count: (s.retry_count == null ? 0 : s.retry_count) + 1,\n} };"
+      },
+      "id": "d1b6549c-06a6-4861-a697-c2a4dc154d5c",
+      "name": "Apply Patch & Increment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2944,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BRNFLFT1D",
+          "mode": "list",
+          "cachedResultName": "all-n8nworkspace"
+        },
+        "text": "=:x: *PR #{{ $json.pr_number }} in {{ $json.owner }}/{{ $json.repo }} failed after {{ $json.retry_count }} remediation attempts.*\n\n*Last test error:*\n```{{ $json.stderr }}```\n\n*Review summary:* {{ $json.review.summary }}",
+        "otherOptions": {}
+      },
+      "id": "dc728f08-4c92-4681-8d8f-f455455aa446",
+      "name": "Post Failure Summary",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        2656,
+        736
+      ],
+      "webhookId": "6adaf84f-f248-475d-87f8-9fe2da6ccd7e",
+      "credentials": {
+        "slackApi": {
+          "id": "6QGiO5jUVmu3t1N1",
+          "name": "Slack account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "788df007-24b0-498e-857e-487c2603a5eb",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        592,
+        608
+      ],
+      "id": "fff57682-2a59-400a-81a3-82b2c850a5a6",
+      "name": "Webhook",
+      "webhookId": "788df007-24b0-498e-857e-487c2603a5eb"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "128693ae-5447-4a4d-aa81-133ccce5e3d2",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -48,
+        432
+      ],
+      "id": "90c95758-eeb4-4af0-8fa8-fa137fddce6f",
+      "name": "Webhook1",
+      "webhookId": "128693ae-5447-4a4d-aa81-133ccce5e3d2"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Only Opened / Synchronize": {
+      "main": [
+        [
+          {
+            "node": "Get PR Diff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get PR Diff": {
+      "main": [
+        [
+          {
+            "node": "Extract PR Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PR Context": {
+      "main": [
+        [
+          {
+            "node": "Static Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Static Review": {
+      "main": [
+        [
+          {
+            "node": "Build State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Static Review",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Findings Schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Static Review",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build State": {
+      "main": [
+        [
+          {
+            "node": "Prepare Test Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Test Run": {
+      "main": [
+        [
+          {
+            "node": "Run Tests (Remote Runner)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Tests (Remote Runner)": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Tests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Tests": {
+      "main": [
+        [
+          {
+            "node": "Tests Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tests Passed?": {
+      "main": [
+        [
+          {
+            "node": "Request Approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Approval": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Post Review Comments",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Rejection Notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Review Comments": {
+      "main": [
+        [
+          {
+            "node": "Merge PR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Available?": {
+      "main": [
+        [
+          {
+            "node": "Remediation AI",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Failure Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remediation AI": {
+      "main": [
+        [
+          {
+            "node": "Apply Patch & Increment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remediation Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Remediation AI",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Patch & Increment": {
+      "main": [
+        [
+          {
+            "node": "Prepare Test Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook1": {
+      "main": [
+        [
+          {
+            "node": "Only Opened / Synchronize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "b3f775f7-4364-413e-9385-fdce003d4a40",
+  "meta": {
+    "instanceId": "2e25b87c5602823d3e7033cfa6f029346e0f7e6afebfdc7108414740f4718a3e"
+  },
+  "nodeGroups": [],
+  "id": "UJsNeWmpzdcv7tpk",
+  "tags": []
+}
